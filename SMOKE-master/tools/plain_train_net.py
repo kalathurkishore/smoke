@@ -19,6 +19,14 @@ from smoke.engine.test_net import run_test
 
 
 def train(cfg, model, device, distributed):
+    for param in model.parameters():
+        param.requires_grad = False
+    
+    _model = model.module if distributed else model
+    if hasattr(_model, 'vld_head'):
+        for param in _model.vld_head.parameters():
+            param.requires_grad = True
+
     optimizer = make_optimizer(cfg, model)
     scheduler = make_lr_scheduler(cfg, optimizer)
 

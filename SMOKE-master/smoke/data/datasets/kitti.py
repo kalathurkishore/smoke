@@ -144,6 +144,7 @@ class KITTIDataset(Dataset):
         rotys = np.zeros([self.max_objs], dtype=np.float32)
         reg_mask = np.zeros([self.max_objs], dtype=np.uint8)
         flip_mask = np.zeros([self.max_objs], dtype=np.uint8)
+        bboxes = np.zeros([self.max_objs, 4], dtype=np.float32)
 
         for i, a in enumerate(anns):
             a = a.copy()
@@ -181,6 +182,7 @@ class KITTIDataset(Dataset):
                 rotys[i] = rot_y
                 reg_mask[i] = 1 if not affine else 0
                 flip_mask[i] = 1 if not affine and flipped else 0
+                bboxes[i] = box2d
 
         target = ParamsList(image_size=img.size,
                             is_train=self.is_train)
@@ -195,6 +197,7 @@ class KITTIDataset(Dataset):
         target.add_field("K", K)
         target.add_field("reg_mask", reg_mask)
         target.add_field("flip_mask", flip_mask)
+        target.add_field("bboxes", bboxes)
 
         if self.transforms is not None:
             img, target = self.transforms(img, target)
