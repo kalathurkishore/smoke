@@ -1,6 +1,9 @@
 import torch.nn.functional as F
 from torch import nn
 
+from smoke.layers.dcn_v2 import DCN
+
+
 class DeformConv(nn.Module):
     def __init__(self,
                  in_channel,
@@ -10,13 +13,14 @@ class DeformConv(nn.Module):
 
         self.norm = norm_func(out_channel)
         self.relu = nn.ReLU(inplace=True)
-        # Using standard Conv2D for visualization export
-        self.deform_conv = nn.Conv2d(in_channels=in_channel,
-                                     out_channels=out_channel,
-                                     kernel_size=3,
-                                     stride=1,
-                                     padding=1,
-                                     dilation=1)
+        self.deform_conv = DCN(in_channels=in_channel,
+                               out_channels=out_channel,
+                               kernel_size=(3, 3),
+                               stride=1,
+                               padding=1,
+                               dilation=1,
+                               deformable_groups=1)
+
 
     def forward(self, x):
         x = self.deform_conv(x)
