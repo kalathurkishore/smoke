@@ -39,15 +39,18 @@ class KeypointDetector(nn.Module):
             raise ValueError("In training mode, targets should be passed")
         images = to_image_list(images)
         features = self.backbone(images.tensors)
-        result, detector_losses = self.heads(features, targets)
 
+        # VLD head forward pass (runs in both train and eval)
         vld_feat = features[-1] if isinstance(features, (list, tuple)) else features
         vld_heatmap, vld_reg = self.vld_head(vld_feat)
 
         if self.training:
-            losses = dict(detector_losses)
+            result, detector_losses = self.heads(features, targets)
+            losses = {}
+            losses.update(detector_losses)
 
-            output_size = (vld_feat.shape[2], vld_feat.shape[3]) # H, W
+            # VLD target generation and loss
+            output_size = (vld_feat.shape[2], vld_feat.shape[3])
             gt_heatmaps = []
             gt_regs = []
             gt_masks = []
@@ -67,14 +70,16 @@ class KeypointDetector(nn.Module):
 
             vld_loss_heatmap = focal_loss(vld_heatmap, gt_heatmaps)
             vld_loss_reg = regression_loss(vld_reg, gt_regs, gt_masks)
-            
+
             losses["vld_hm_loss"] = vld_loss_heatmap
             losses["vld_reg_loss"] = 0.1 * vld_loss_reg
 
             return losses
+        else:
+            result, detector_losses, model_output = self.heads(features, targets)
 
-        return {
-            "vld_heatmap": vld_heatmap,
-            "vld_regression": vld_reg,
-            "smoke_result": result
-        }
+            # Attach VLD outputs to model_output
+            model_output["vld_heatmap"] = vld_heatmap
+            model_output["vld_regression"] = vld_reg
+
+        return result, model_output
