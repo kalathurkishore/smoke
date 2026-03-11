@@ -38,6 +38,13 @@ target.add_field("bboxes", bboxes)
 
 This is where you branch the computational load from SMOKE's heads into the parallel VLD Head.
 
+> [!IMPORTANT]
+> The original `keypoint_detector.py` has **two different return signatures** from `self.heads()`:
+> - **Training**: `result, detector_losses = self.heads(features, targets)` → returns `losses`
+> - **Inference**: `result, detector_losses, model_output = self.heads(features, targets)` → returns `result, model_output`
+>
+> The VLD integration must preserve this exact structure.
+
 **Imports at the top of the file:**
 ```python
 from ..heads.vld_head import VLDHead
@@ -47,46 +54,58 @@ from ..utils.vld_target import generate_vld_targets
 
 **Inside the `__init__` constructor:**
 ```python
-self.vld_head = VLDHead(in_channels=self.backbone.out_channels) 
-# Note: DO NOT hardcode 256. Access the out_channels directly from the initialized backbone.
+self.vld_head = VLDHead(in_channels=self.backbone.out_channels)
+# Note: DO NOT hardcode 256. The actual SMOKE config uses BACKBONE_OUT_CHANNELS = 64.
 ```
 
-**Inside the `forward()` method logic:**
-Instead of returning just `detector_losses` natively, calculate the VLD properties. Ensure you access the final emitted representation layer.
+**Inside the `forward()` method — complete replacement:**
 ```python
-# Extract the final DLA-34 layer (crucial step!)
-vld_feat = features[0] if isinstance(features, (list, tuple)) else features
-vld_heatmap, vld_reg = self.vld_head(vld_feat)
+def forward(self, images, targets=None):
+    if self.training and targets is None:
+        raise ValueError("In training mode, targets should be passed")
+    images = to_image_list(images)
+    features = self.backbone(images.tensors)
 
-if self.training:
-    losses = dict(detector_losses)
+    # VLD head forward pass (runs in both train and eval)
+    vld_feat = features[-1] if isinstance(features, (list, tuple)) else features
+    vld_heatmap, vld_reg = self.vld_head(vld_feat)
 
-    output_size = (vld_feat.shape[2], vld_feat.shape[3]) # H, W
-    gt_heatmaps, gt_regs, gt_masks = [], [], []
-    
-    for t in targets:
-        bboxes = t.get_field("bboxes")
-        valid_mask = t.get_field("reg_mask") == 1
-        hm, reg, mask = generate_vld_targets(bboxes[valid_mask].cpu().numpy(), output_size, stride=1)
-        gt_heatmaps.append(hm)
-        gt_regs.append(reg)
-        gt_masks.append(mask)
+    if self.training:
+        result, detector_losses = self.heads(features, targets)
+        losses = {}
+        losses.update(detector_losses)
 
-    # Cast to GPU variables
-    gt_heatmaps = torch.stack(gt_heatmaps).unsqueeze(1).to(vld_heatmap.device)
-    gt_regs = torch.stack(gt_regs).to(vld_reg.device)
-    gt_masks = torch.stack(gt_masks).to(vld_reg.device)
+        # VLD target generation and loss
+        output_size = (vld_feat.shape[2], vld_feat.shape[3])
+        gt_heatmaps, gt_regs, gt_masks = [], [], []
 
-    # Accumulate Loss Output
-    losses["vld_hm_loss"] = focal_loss(vld_heatmap, gt_heatmaps)
-    losses["vld_reg_loss"] = 0.1 * regression_loss(vld_reg, gt_regs, gt_masks)
-    return losses
-    
-return {
-    "vld_heatmap": vld_heatmap,
-    "vld_regression": vld_reg,
-    "smoke_result": result
-}
+        for t in targets:
+            bboxes = t.get_field("bboxes")
+            valid_mask = t.get_field("reg_mask") == 1
+            valid_bboxes = bboxes[valid_mask]
+            hm, reg, mask = generate_vld_targets(
+                valid_bboxes.cpu().numpy(), output_size, stride=1
+            )
+            gt_heatmaps.append(hm)
+            gt_regs.append(reg)
+            gt_masks.append(mask)
+
+        gt_heatmaps = torch.stack(gt_heatmaps).unsqueeze(1).to(vld_heatmap.device)
+        gt_regs = torch.stack(gt_regs).to(vld_reg.device)
+        gt_masks = torch.stack(gt_masks).to(vld_reg.device)
+
+        losses["vld_hm_loss"] = focal_loss(vld_heatmap, gt_heatmaps)
+        losses["vld_reg_loss"] = 0.1 * regression_loss(vld_reg, gt_regs, gt_masks)
+
+        return losses
+    else:
+        result, detector_losses, model_output = self.heads(features, targets)
+
+        # Attach VLD outputs to model_output
+        model_output["vld_heatmap"] = vld_heatmap
+        model_output["vld_regression"] = vld_reg
+
+    return result, model_output
 ```
 
 ---
@@ -102,7 +121,7 @@ def train(cfg, model, device, distributed):
     # Completely freeze the full backbone + SMOKE regression heads
     for param in model.parameters():
         param.requires_grad = False
-    
+
     # Isolate active tuning specifically for VLD components
     _model = model.module if distributed else model
     if hasattr(_model, 'vld_head'):
@@ -116,4 +135,29 @@ def train(cfg, model, device, distributed):
 
 ---
 
-*This guide mirrors the precise edits and logic merged successfully under commit `4c540e9` internally.*
+## 5. Required Package Init File
+**File:** `smoke/modeling/utils/__init__.py`
+
+Create an **empty** `__init__.py` file in the `utils/` directory so Python recognizes it as a package:
+
+```bash
+touch smoke/modeling/utils/__init__.py
+```
+
+Without this file, imports of `heatmap.py` and `vld_target.py` will fail with `ModuleNotFoundError`.
+
+---
+
+## Quick Summary of All Modified/New Files
+
+| File | Action | Purpose |
+|------|--------|---------|
+| `smoke/modeling/heads/vld_head.py` | **NEW** | VLD head network (heatmap + regression branches) |
+| `smoke/modeling/loss/vld_loss.py` | **NEW** | Focal loss + L1 regression loss |
+| `smoke/modeling/utils/heatmap.py` | **NEW** | Gaussian heatmap generation utilities |
+| `smoke/modeling/utils/vld_target.py` | **NEW** | Target generation pipeline |
+| `smoke/modeling/utils/__init__.py` | **NEW** | Package init (empty file) |
+| `smoke/modeling/detector/keypoint_detector.py` | **MODIFIED** | VLD head integration into detector |
+| `smoke/data/datasets/kitti.py` | **MODIFIED** | Added `bboxes` field to targets |
+| `tools/plain_train_net.py` | **MODIFIED** | Backbone freezing + VLD-only training |
+
