@@ -36,7 +36,7 @@ class VLDHead(nn.Module):
         reg = self.reg_head(feat)
 
         du_dv = reg[:, 0:2]
-        dh_dw = torch.exp(reg[:, 2:4])
+        dh_dw = torch.exp(torch.clamp(reg[:, 2:4], max=10))
 
         regression = torch.cat([du_dv, dh_dw], dim=1)
 

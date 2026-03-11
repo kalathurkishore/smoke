@@ -7,7 +7,7 @@ def focal_loss(pred, gt):
     neg_inds = gt.lt(1).float()
 
     pos_loss = -torch.log(pred) * torch.pow(1 - pred, 2) * pos_inds
-    neg_loss = -torch.log(1 - pred) * torch.pow(pred, 2) * neg_inds
+    neg_loss = -torch.log(1 - pred) * torch.pow(pred, 2) * torch.pow(1 - gt, 4) * neg_inds
 
     num_pos = pos_inds.sum()
 

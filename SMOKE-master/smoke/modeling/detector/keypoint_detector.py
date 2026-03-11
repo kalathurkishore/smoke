@@ -41,7 +41,7 @@ class KeypointDetector(nn.Module):
         features = self.backbone(images.tensors)
         result, detector_losses = self.heads(features, targets)
 
-        vld_feat = features[0] if isinstance(features, (list, tuple)) else features
+        vld_feat = features[-1] if isinstance(features, (list, tuple)) else features
         vld_heatmap, vld_reg = self.vld_head(vld_feat)
 
         if self.training:
